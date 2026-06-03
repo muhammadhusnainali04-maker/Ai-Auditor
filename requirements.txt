@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+motor
+pymongo
+python-dotenv
+pydantic
+openai
+cohere
+tiktoken
+cite
