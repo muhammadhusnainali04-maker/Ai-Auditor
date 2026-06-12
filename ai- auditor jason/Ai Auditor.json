@@ -1,0 +1,933 @@
+{
+  "name": "Ai Auditor",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "08ad6f5c-474a-40e9-abde-5544bdd601e8",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -3024,
+        192
+      ],
+      "id": "e1c7140d-2704-442c-8e68-faf10c138454",
+      "name": "Webhook1",
+      "webhookId": "08ad6f5c-474a-40e9-abde-5544bdd601e8"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "edbed481-40bf-4d96-ab9d-915f053fae11",
+              "leftValue": "={{ $json.transcript_available }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "289eed60-6c11-4e01-a35f-0d9ce3435753",
+              "leftValue": "={{ $json.duration_seconds }}",
+              "rightValue": 60,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -2528,
+        192
+      ],
+      "id": "70100a22-a7c3-483a-95e4-98221486ee1e",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "model": "llama-3.3-70b-versatile",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -1584,
+        416
+      ],
+      "id": "73469ed5-1524-4ce2-a071-af829eb37921",
+      "name": "Groq Chat Model14",
+      "credentials": {
+        "groqApi": {
+          "id": "HCdFYaqUyeMBHCkx",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let facts = $input.item.json;\n\n// Default flags based on instructions\nfacts.internal_review_required = false;\nfacts.client_auto_send_allowed = true; // Assume true until a rule breaks it\n\n// Rule 1: Transcript checks (using metadata passed from earlier nodes)\nif (facts.transcript_available === false || facts.transcript_available === \"false\" || facts.transcript_available === null) {\n    facts.internal_review_required = true;\n    facts.client_auto_send_allowed = false;\n}\n\n// Rule 2: Duration check (Under 5 minutes / 300 seconds)\nif (facts.call_duration_seconds < 300) {\n    facts.transcript_quality = \"low\";\n    facts.client_auto_send_allowed = false;\n}\n\n// Rule 3 & 4: Missing crucial contact info\nif (!facts.client_email || facts.client_email === \"null\" || facts.client_email.trim() === \"\") {\n    facts.client_auto_send_allowed = false;\n}\nif (!facts.client_company_name || facts.client_company_name === \"null\" || facts.client_company_name.trim() === \"\") {\n    facts.client_auto_send_allowed = false;\n}\n\n// Rule 5: Fewer than 2 pain points\nif (!facts.pain_points || facts.pain_points.length < 2) {\n    facts.client_auto_send_allowed = false;\n}\n\n// Rule 6 & 7: Missing operational data flags internal review\nif (!facts.current_systems || facts.current_systems.length === 0 || facts.current_systems[0] === \"null\") {\n    facts.internal_review_required = true;\n}\nif (!facts.top_business_goal || facts.top_business_goal === \"null\") {\n    facts.internal_review_required = true;\n}\n\n// Rule 8: Missing what not to automate\nif (!facts.what_not_to_automate || facts.what_not_to_automate === \"null\") {\n    // Flag it in internal report (handled in prompt 3), but we can track it here\n    if (!facts.important_missing_fields) facts.important_missing_fields = [];\n    facts.important_missing_fields.push(\"what_not_to_automate\");\n}\n\n  return { json: facts };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1792,
+        176
+      ],
+      "id": "9fe3be14-ab44-44dd-b1f8-3b91bec718e6",
+      "name": "PARSE FACT JSON"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract the Retell payload from the Webhook\nconst payload = $input.item.json.body.call || {};\n\n// Safely extract all required fields per LA Consulting specifications\nconst callId = payload.call_id || \"No_Call_ID\";\nconst transcript = payload.transcript || \"\";\nconst recordingUrl = payload.recording_url || \"\";\nconst durationMs = payload.duration_ms || 0;\nconst durationSeconds = Math.floor(durationMs / 1000);\n\n// Basic quality flags\nconst transcriptAvailable = transcript.trim().length > 0;\nconst isCallLongEnough = durationSeconds > 120; // 2 minute threshold for initial gate\n\nreturn {\n  json: {\n    call_id: callId,\n    transcript: transcript,\n    recording_url: recordingUrl,\n    duration_seconds: durationSeconds,\n    transcript_available: transcriptAvailable,\n    is_call_long_enough: isCallLongEnough\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2768,
+        192
+      ],
+      "id": "8a5cc280-4318-48d4-915e-d3d5c492f857",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a Senior Business Strategist.\nYour job is to generate a client-facing AI Readiness Report in clean Markdown.\n\nCRITICAL SOURCE OF TRUTH:\nYou must base this report ONLY on the JSON facts provided below. \nDo not look at the raw transcript. If a fact is null or missing, state that the information was not captured. Do not invent numbers.\n\nIf you generate a table, you MUST use strict Markdown formatting. You MUST include a hard line break (newline) before the table starts, and a hard line break after every single row. Do NOT squash the table into a single continuous line.\n\nLA CONSULTING COMMUNICATION RULES:\n- Format strictly in clean Markdown (use # for headers, bullet points for lists). No HTML.\n- Do not use hype words: revolutionize, unlock, transform, seamless omnichannel, end-to-end automation, guaranteed return on investment, or replace your staff.\n- Use \"AI voice agent\" when discussing voice automation.\n- Do not recommend full automation for emergency calls.\n- Do not imply LA Consulting has already been hired.\n- Do not overstate ROI.\n\nJSON FACT DATA:\n{{ JSON.stringify($json) }}\n\nYou are generating the client-facing report for a Heating, Ventilation, and Air Conditioning company after an assessment call.\n\nUse extracted_facts.json as the only source of truth.\nDo not use the raw transcript to add new facts.\nDo not invent facts, numbers, systems, budgets, quotes, or pain points.\nIf information is missing in extracted_facts.json, write \"Not captured during the assessment call\" or \"Needs follow-up.\"\n\nDo not include LA Consulting internal sales notes.\nDo not include deal readiness scoring.\nDo not include suggested internal pricing.\nDo not include private objections strategy.\nDo not use hype language.\nDo not promise specific financial outcomes.\nDo not claim artificial intelligence can replace people.\nDo not recommend fully automated emergency handling without human escalation.\nUse \"AI voice agent\" when discussing voice automation.\n\nEvery major recommendation must be tied to at least one extracted fact, pain point, or evidence_map item.\nIf there is no supporting fact, do not include the recommendation.\n\n*** CRITICAL RULE FOR BUSINESS INSIGHTS ***\nYou are strictly forbidden from using circular logic or generic filler. \n1. DO NOT define why something matters by repeating its name (e.g., Do NOT say \"missed call management matters because it reduces missed calls\"). You must explain the underlying business consequence.\n2. DO NOT use generic, copy-pasted phrases like \"Increased revenue and customer satisfaction\" across multiple items. \n3. You MUST use specific, industry-relevant business impacts (e.g., \"Capturing high-margin emergency dispatch revenue,\" \"Preventing customer defection to competitors,\" or \"Increasing replacement quote win-rate\").\n\n*** RULE FOR MISSING INFORMATION ***\nIf you list missing fields from the JSON in Section 11, you MUST translate the raw JSON keys into natural, professional English. For example, do not write \"calldurationseconds\" or \"openquotecount\". Instead, write \"Total length of the call\" or \"Number of open quotes currently pending.\" Never expose raw database variable names to the client.\n\nReturn the report in clean Markdown.\n\nClient report structure:\n\nTitle: AI Readiness and Revenue Leakage Audit\n\nMetadata:\nCompany:\nMarket:\nVertical:\nAudit ID:\nGenerated:\nReport delivery email:\n\n1. Executive Diagnosis\nWrite 2 to 4 practical paragraphs. State the main operational diagnosis. Do not say the business needs artificial intelligence just because this is an artificial intelligence assessment.\n\n2. Business Snapshot\nInclude business type, market, residential or commercial mix, employee count, technician count, revenue sources, source of truth, primary goal, data maturity, prior automation experience, and implementation constraints.\n\n3. Current Operating Reality\nDescribe how the company currently handles customers, jobs, quotes, scheduling, calls, follow-up, and reporting. Tie every statement to extracted_facts.json.\n\n4. Main Bottlenecks\nList the top 3 to 5 bottlenecks. For each, include observed issue, business consequence, supporting fact, and confidence.\n\n5. Revenue Leakage Hypothesis\nDo not invent dollar amounts. Identify likely leakage categories only if supported by extracted_facts.json. For each, state why it may matter, supporting fact, and what data is needed to quantify it.\n\n\n6. Ranked Opportunity Areas\nDO NOT USE A TABLE FOR THIS SECTION. \nInstead, you MUST use this exact bolded block format for the top 3 opportunities. \n\n**Rank 1: [Name of Specific Opportunity]**\n* **Supporting Fact:** [Exact fact from JSON, e.g., 50 missed calls per week]\n* **The Business Consequence:** [Explain the specific pain. DO NOT say \"decreased revenue\". Say \"Losing emergency dispatch jobs to competitors.\"]\n* **The Strategic Impact:** [Explain the specific fix. DO NOT say \"increased customer satisfaction\". Say \"Capturing high-margin after-hours repairs.\"]\n* **Implementation Details:** Complexity: [Low/Medium/High] | Recommended: [Phase 1/2/3]\n* **Success Metric:** [Specific tracking metric]\n\n**Rank 2: [Name of Specific Opportunity]**\n(Repeat the exact same bulleted structure for Rank 2 and Rank 3).\n\n\n7. Recommended First Phase\nRecommend the first practical phase. Usually this should be visibility, cleanup, process mapping, and workflow control before advanced artificial intelligence.\n\n8. 30, 60, and 90 Day Roadmap\nCreate a practical phased roadmap. \nCRITICAL SAFETY RULE: If you recommend deploying an AI voice agent in this roadmap, you MUST explicitly state in the exact same sentence that \"all emergency calls will be instantly escalated to a human dispatcher.\" Failure to explicitly state this safeguard will cause the system to reject the report.\n\n9. What Should Not Be Automated Yet\nAlways include this section. If not captured, say it needs confirmation before customer-facing automation is deployed.\n\n10. Success Metrics\nList metrics relevant to extracted facts only.\n\n11. Information Still Needed\nUse critical_missing_fields and important_missing_fields.\n\n12. Recommended Next Questions\nList 5 to 10 questions tied to missing fields or weak-confidence recommendations.\n\n13. Closing Summary\nWrite a concise practical conclusion. Do not pitch aggressively.",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        -1584,
+        176
+      ],
+      "id": "f31d74c0-5ded-40d0-9473-5e9ef1814cac",
+      "name": "Client Report Generator"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are an Internal Solutions Architect.\nYour job is to generate an internal briefing and deal strategy document in clean Markdown.\n\nCRITICAL SOURCE OF TRUTH:\nBase this report ONLY on the provided JSON facts and evidence_map. Do not invent data.\n\nJSON FACT DATA:\n{{ JSON.stringify($('PARSE FACT JSON').item.json) }}\n\nREQUIRED STRUCTURE:\n# INTERNAL BRIEFING: {{ $('PARSE FACT JSON').item.json.client_company_name || \"Unknown Company\"}}\nYou are generating the internal LA Consulting sales and implementation brief after a Retell assessment call with a Heating, Ventilation, and Air Conditioning company.\n\n*** CRITICAL FORMATTING RULE ***\nDO NOT USE TABLES. YOU ARE STRICTLY FORBIDDEN FROM GENERATING MARKDOWN TABLES. \nInstead, you MUST use bold text and bulleted lists to present all structured data (such as Deal Scores, Objections, Roadmaps, and Timelines).\nEnsure there is a blank line between every bullet point for readability.\n\nThis report is for LA Consulting only.\nUse extracted_facts.json as the source of truth.\nThe transcript may be used only for short evidence snippets already included in captured_quotes_from_call or evidence_map.\nDo not invent facts, numbers, systems, budgets, or quotes.\nIf information is missing, say \"Not captured\" or \"Needs follow-up.\"\nUse \"AI voice agent\" when discussing voice automation.\nDo not use hype language.\nDo not guarantee outcomes.\nDo not recommend AI voice agent deployment unless call-handling pain and escalation rules justify it.\n\nEvery recommendation must be tied to at least one extracted fact, pain point, or evidence_map item.\nIf there is no supporting fact, do not include the recommendation.\n\nReturn the report in clean Markdown.\n\nInternal report structure:\n\nTitle: LA Consulting Internal Sales and Implementation Brief\n\nMetadata:\n* **Company:**\n* **Market:**\n* **Contact:**\n* **Role:**\n* **Phone:**\n* **Email:**\n* **Audit ID:**\n* **Generated:**\n* **Retell call ID:**\n* **Recording URL:**\n* **Call duration:**\n* **Transcript quality:**\n* **Internal review required:**\n* **Client auto-send allowed:**\n\n1. Internal Executive Summary\nSummarize the opportunity, primary buyer pain, likely urgency, discovery quality, best first offer, main implementation risk, and whether to pursue.\n\n2. Deal Readiness Score\nScore deal readiness, operational pain intensity, implementation complexity, data readiness, urgency, and first-offer fit as Low, Medium, or High. For each score, include a reason and supporting fact.\n\n3. Primary Buyer Pain\nState the single most important pain LA Consulting should lead with.\n\n4. Best First Paid Engagement\nRecommend one engagement. Include engagement name, problem solved, supporting facts, scope, deliverables, required client inputs, suggested implementation length, success metrics, risks, exclusions, and possible monthly support path.\n\n5. Suggested Offer Positioning\nWrite how LA Consulting should describe the offer in plain business language.\n\n6. Likely Objections\nList likely objections based on extracted facts. If there is no evidence, label the objection as possible and needing confirmation.\n\n7. Response to Objections\nWrite practical responses with no hype and no guaranteed return on investment.\n\n8. Discovery Gaps\nUse critical_missing_fields and important_missing_fields. Split into critical, important, and nice-to-have gaps.\n\n9. Automation Red Flags and Guardrails\nInclude safety boundaries. Emergency calls, complaints, dispatch decisions, and customer-facing automation need escalation rules.\n\n10. Recommended Technology Direction\nRecommend direction, not final vendor selection. Do not claim the client uses a tool unless current_systems confirms it.\n\n11. 30, 60, and 90 Day Implementation Path\nCreate an internal implementation roadmap.\n\n12. Upsell Path\nList future paid opportunities supported by extracted facts or clearly labeled as possible future expansion.\n\n13. Next Call Agenda\nCreate a concrete agenda for the next client meeting.\n\n14. Internal Recommendation\nEnd with one of these: Pursue now, Pursue after more discovery, or Do not pursue yet. Give the reason.",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        -1216,
+        176
+      ],
+      "id": "47055987-0b93-49b7-8846-ccc14de5413b",
+      "name": "Internal Report Generator"
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"safe_to_send_client_report\": true,\n  \"validation_failure_reason\": \"string (Leave empty if safe)\",\n  \"flagged_hype_words_found\": [\"string\"]\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        -704,
+        432
+      ],
+      "id": "1a12389a-2b9a-4280-9d7c-409af0e9b3d4",
+      "name": "Structured Output Parser2"
+    },
+    {
+      "parameters": {
+        "model": "llama-3.3-70b-versatile",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -848,
+        432
+      ],
+      "id": "51da7a22-4fd1-4880-b63e-fcb8abb2664a",
+      "name": "Groq Chat Model17",
+      "credentials": {
+        "groqApi": {
+          "id": "HCdFYaqUyeMBHCkx",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "cab71d77-bf0d-47b7-b984-9071154c6926",
+              "leftValue": "={{ $json.output.safe_to_send_client_report }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "1a2ba028-c78f-464e-92b3-df72776a8ef3",
+              "leftValue": "= {{ $('PARSE FACT JSON').item.json.client_email }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -480,
+        176
+      ],
+      "id": "30a72605-1051-4fb0-b056-7f8ab9cde326",
+      "name": "If1"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a quality-control reviewer for LA Consulting reports.\n\nReview the client-facing report and internal LA Consulting report against extracted_facts.json.\n\nextracted_facts.json is the source of truth.\nThe reports must not include factual claims absent from extracted_facts.json.\n\nCheck for:\n1. Invented numbers.\n2. Invented systems.\n3. Invented budgets.\n4. Invented quotes.\n5. Internal sales notes accidentally included in the client report.\n6. Hype language.\n7. Recommendations not supported by extracted facts.\n8. Missing \"What Should Not Be Automated Yet\" section.\n9. Missing \"Information Still Needed\" section.\n10. Missing 30, 60, and 90 day roadmap.\n11. AI voice agent recommended without escalation warnings.\n12. Client report sounding too salesy.\n13. Internal report missing next call agenda.\n14. Internal report missing recommended first paid engagement.\n15. Acronyms used before being defined.\n16. Client report includes deal readiness, objections, sales strategy, or internal positioning.\n17. Report claims budget was captured when budget was not present.\n18. Report claims revenue leakage as fact when numbers are missing.\n19. Report recommends a vendor that was not mentioned or justified.\n20. Report includes unsupported implementation scope.\n\nReturn JSON only:\n{\n  \"client_report_pass\": true or false,\n  \"internal_report_pass\": true or false,\n  \"issues\": [],\n  \"required_fixes\": [],\n  \"safe_to_send_client_report\": true or false\n}\n\nIf the client report contains internal LA Consulting sales strategy, set safe_to_send_client_report to false.\nIf the report invents numbers, set safe_to_send_client_report to false.\nIf the report recommends fully automated emergency handling without human escalation, set safe_to_send_client_report to false.\nIf the report includes a budget not present in extracted_facts.json, set safe_to_send_client_report to false.\nIf any recommendation lacks a supporting fact, add it to required_fixes.\n\n*** VALIDATION ALLOWANCE RULE ***\nThe report writer has been instructed to use professional consulting language to explain the business impact of the facts (e.g., explaining that missed calls lead to lost emergency revenue). \nDo NOT flag the report as a hallucination just because it uses strategic business phrasing.\nYou should ONLY output \"false\" if the report:\n1. Invents new numbers (e.g., claims 100 missed calls instead of 50).\n2. Changes the company name or vertical.\n3. Suggests software or tools that directly contradict the JSON facts.\n\nCRITICAL: Pay special attention to extracting numbers like monthly inbound calls... Convert spoken words (like 'Hundred' or 'Ten') into integers (like 100 or 10).\n\nCRITICAL OUTPUT RULE: > You are an automated routing script. You MUST output ONLY raw, valid JSON.\nDo NOT include any conversational text like \"Here is the validation.\"\nDo NOT wrap your output in markdown blocks (do not use ```json).\nOutput nothing but the raw JSON object.\n\nEXTRACTED FACTS (Source of Truth):\n\n{{ $('PARSE FACT JSON').item.json }}\nCLIENT REPORT TEXT:\n{{ $('Client Report Generator').item.json.output }}\n\nEvaluate the report against the facts. Return valid JSON only.\n",
+        "hasOutputParser": true,
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        -848,
+        176
+      ],
+      "id": "73b6f597-b6fd-4d60-a29d-8b43392ab5da",
+      "name": "Validation Agent"
+    },
+    {
+      "parameters": {
+        "sendTo": "mhusnainali.sawaeng@gmail.com",
+        "subject": "={{ $('PARSE FACT JSON').item.json.client_company_name }}",
+        "emailType": "text",
+        "message": "ou must include the Internal Report, the Client Report, AND the validation_failure_reason so the team knows why the AI blocked it.",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -368,
+        416
+      ],
+      "id": "d396da04-ff7e-4ffb-9a8c-e5c35f53d762",
+      "name": "Send a message2",
+      "webhookId": "c0b8de1d-05e9-4587-a376-da4409cc196f",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "fSR0C8tdFXQcRMkN",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "llama-3.3-70b-versatile",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -1216,
+        432
+      ],
+      "id": "4991070f-9497-47b2-bae5-90bde5cdcb6b",
+      "name": "Groq Chat Model18",
+      "credentials": {
+        "groqApi": {
+          "id": "HCdFYaqUyeMBHCkx",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  {\n    \"model\": \"llama-3.3-70b-versatile\",\n    \"temperature\": 0,\n    \"response_format\": {\n      \"type\": \"json_object\"\n    },\n    \"messages\": [\n      {\n        \"role\": \"system\",\n        \"content\": \"You are an extraction agent for LA Consulting. Your ONLY job is to extract facts into a strict JSON object. Do not infer or hallucinate. If info is missing, use null or an empty array []. You MUST return ONLY valid JSON matching this exact schema: {\\\"audit_id\\\": \\\"string\\\", \\\"generated_at\\\": \\\"string\\\", \\\"source_call_id\\\": \\\"string\\\", \\\"recording_url\\\": \\\"string\\\", \\\"call_duration_seconds\\\": 0, \\\"transcript_available\\\": true, \\\"transcript_quality\\\": \\\"string\\\", \\\"client_company_name\\\": \\\"string\\\", \\\"client_contact_name\\\": \\\"string\\\", \\\"client_contact_role\\\": \\\"string\\\", \\\"client_email\\\": \\\"string\\\", \\\"client_phone\\\": \\\"string\\\", \\\"market_served\\\": \\\"string\\\", \\\"business_type\\\": \\\"string\\\", \\\"business_model_summary\\\": \\\"string\\\", \\\"residential_commercial_mix\\\": \\\"string\\\", \\\"main_revenue_sources\\\": [\\\"string\\\"], \\\"employee_count\\\": 0, \\\"field_technician_count\\\": 0, \\\"top_business_goal\\\": \\\"string\\\", \\\"secondary_goals\\\": [\\\"string\\\"], \\\"current_systems\\\": [\\\"string\\\"], \\\"system_of_record_customers\\\": \\\"string\\\", \\\"system_of_record_jobs\\\": \\\"string\\\", \\\"system_of_record_quotes\\\": \\\"string\\\", \\\"system_of_record_scheduling\\\": \\\"string\\\", \\\"data_maturity\\\": \\\"string\\\", \\\"monthly_inbound_calls_or_leads\\\": 0, \\\"missed_calls_per_week\\\": 0, \\\"after_hours_calls_per_week\\\": 0, \\\"business_hours_call_process\\\": \\\"string\\\", \\\"after_hours_call_process\\\": \\\"string\\\", \\\"emergency_call_process\\\": \\\"string\\\", \\\"missed_call_follow_up_process\\\": \\\"string\\\", \\\"lead_sources\\\": [\\\"string\\\"], \\\"lead_response_time\\\": \\\"string\\\", \\\"quote_follow_up_process\\\": \\\"string\\\", \\\"open_quote_count\\\": 0, \\\"monthly_quote_volume\\\": 0, \\\"replacement_quote_close_rate\\\": \\\"string\\\", \\\"dispatch_owner\\\": \\\"string\\\", \\\"scheduling_owner\\\": \\\"string\\\", \\\"scheduling_hours_per_day\\\": 0, \\\"scheduling_hours_per_week\\\": 0, \\\"common_scheduling_errors\\\": [\\\"string\\\"], \\\"dispatch_problems\\\": [\\\"string\\\"], \\\"maintenance_agreements_offered\\\": \\\"string\\\", \\\"maintenance_agreement_count\\\": 0, \\\"admin_time_wasters\\\": [\\\"string\\\"], \\\"desired_reports\\\": [\\\"string\\\"], \\\"daily_dashboard_priorities\\\": [\\\"string\\\"], \\\"prior_automation_experience\\\": \\\"string\\\", \\\"prior_ai_voice_agent_experience\\\": \\\"string\\\", \\\"automation_comfort_level\\\": \\\"string\\\", \\\"change_tolerance\\\": \\\"string\\\", \\\"implementation_constraints\\\": [\\\"string\\\"], \\\"what_not_to_automate\\\": \\\"string\\\", \\\"follow_up_focus\\\": \\\"string\\\", \\\"captured_quotes_from_call\\\": [\\\"string\\\"], \\\"pain_points\\\": [\\\"string\\\"], \\\"opportunity_candidates\\\": [\\\"string\\\"], \\\"critical_missing_fields\\\": [\\\"string\\\"], \\\"important_missing_fields\\\": [\\\"string\\\"], \\\"evidence_map\\\": {}, \\\"internal_review_required\\\": false, \\\"client_auto_send_allowed\\\": false}\"\n      },\n      {\n        \"role\": \"user\",\n        \"content\": \"TRANSCRIPT:\\n\" + $json.transcript\n      }\n    ]\n  }\n}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -2272,
+        176
+      ],
+      "id": "4e9a16f3-eb4f-4bba-a1bb-79a69609bc62",
+      "name": "HTTP Request",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "70jAwuADsAqjxR4G",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "mhusnainali.sawaeng@gmail.com",
+        "subject": "=Internal AI Audit: {{ $('PARSE FACT JSON').item.json.client_company_name }}",
+        "message": "=message",
+        "options": {
+          "attachmentsUi": {
+            "attachmentsBinary": [
+              {}
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        2432
+      ],
+      "id": "039f5b82-15ff-421a-8d23-4118643dcd54",
+      "name": "Send a message3",
+      "webhookId": "29c8a721-6522-4cad-a885-7b5dd0b3c613",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "fSR0C8tdFXQcRMkN",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return JSON.parse($input.item.json.choices[0].message.content);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2032,
+        176
+      ],
+      "id": "ddc4acac-0aa3-422b-9cab-da3f0b5e9755",
+      "name": "Code in JavaScript2"
+    },
+    {
+      "parameters": {
+        "content": "3172\n\nnode 1 token \n3225\n\nnode 2 token \n2714\n\n\nnode 3 token \n\n2665\n\n\ntotall 11776\n\ntotall cost 0.00092904",
+        "height": 352
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -2000,
+        880
+      ],
+      "typeVersion": 1,
+      "id": "762f7cd8-5cad-4a45-8d5a-ba769e88b4c1",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "operation": "toText",
+        "sourceProperty": "html_internal_report",
+        "binaryPropertyName": "=data",
+        "options": {
+          "fileName": "audit.html"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        2432
+      ],
+      "id": "a0aa7ea3-f15d-4744-8022-8694bcc6c6a1",
+      "name": "Convert to File"
+    },
+    {
+      "parameters": {
+        "name": "=AI Audit: {{ $('PARSE FACT JSON').item.json.client_company_name }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "1BZGJXax8zuTuBRmLujhoQA3lTKFbz5bR",
+          "mode": "list",
+          "cachedResultName": "Ai Audit ",
+          "cachedResultUrl": "https://drive.google.com/drive/folders/1BZGJXax8zuTuBRmLujhoQA3lTKFbz5bR"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        448,
+        2432
+      ],
+      "id": "4af970f3-ceff-490e-aa95-812713f2a096",
+      "name": "Upload file",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "e9GqsRvqJDr9FpwX",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $json.id }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        656,
+        2432
+      ],
+      "id": "b8913b85-463f-47be-99d0-cb6f0a2bd682",
+      "name": "Download file1",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "e9GqsRvqJDr9FpwX",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('PARSE FACT JSON').item.json.client_email }}, internal@laconsulting.com",
+        "subject": "={{ $('PARSE FACT JSON').item.json.client_company_name }} (Client Report)",
+        "emailType": "text",
+        "message": "=Hi, please find your AI Readiness and Revenue Leakage Audit attached as a PDF.",
+        "options": {
+          "attachmentsUi": {
+            "attachmentsBinary": [
+              {
+                "property": "=Ai Audit"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1296,
+        2704
+      ],
+      "id": "b0af0e03-a748-4eec-bcb6-c7dbb4bfcada",
+      "name": "Send a message1",
+      "webhookId": "29c8a721-6522-4cad-a885-7b5dd0b3c613",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "fSR0C8tdFXQcRMkN",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentURL": "={{ $json.id }}",
+        "actionsUi": {
+          "actionFields": [
+            {
+              "action": "insert",
+              "text": "={{ $('Client Report Generator').item.json.output }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        848,
+        2704
+      ],
+      "id": "ad14eb9f-112e-4c67-b995-32a8c19039b6",
+      "name": "Update a document",
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "YFyoTVpt4DQdxOP4",
+          "name": "Google Docs account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $json.documentId }}",
+          "mode": "id"
+        },
+        "options": {
+          "binaryPropertyName": "Ai Audit",
+          "googleFileConversion": {
+            "conversion": {
+              "docsToFormat": "application/pdf",
+              "slidesToFormat": "application/pdf",
+              "sheetsToFormat": "application/pdf"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1056,
+        2704
+      ],
+      "id": "8fdbb3c3-7470-436d-9766-43e6e8f8c40f",
+      "name": "Download file",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "e9GqsRvqJDr9FpwX",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "folderId": "1BZGJXax8zuTuBRmLujhoQA3lTKFbz5bR",
+        "title": "=AI Audit: {{ $('PARSE FACT JSON').item.json.client_company_name }}"
+      },
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        640,
+        2704
+      ],
+      "id": "eec078a4-38e5-4472-ae98-73db82880b11",
+      "name": "Create a document",
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "YFyoTVpt4DQdxOP4",
+          "name": "Google Docs account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "markdownToHtml",
+        "markdown": "={{ $('Client Report Generator').item.json.output }}",
+        "destinationKey": "html_report",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.markdown",
+      "typeVersion": 1,
+      "position": [
+        -256,
+        160
+      ],
+      "id": "2e2cf93f-b273-409a-8d22-52d7d1e7b162",
+      "name": "Markdown Client"
+    },
+    {
+      "parameters": {
+        "mode": "markdownToHtml",
+        "markdown": "={{ $('Internal Report Generator').item.json.output }}",
+        "destinationKey": "html_internal_report",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.markdown",
+      "typeVersion": 1,
+      "position": [
+        -32,
+        160
+      ],
+      "id": "02d7777a-1c7f-4780-a5c2-024f9dd89db7",
+      "name": "Markdown internal"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('PARSE FACT JSON').item.json.client_email }}, mhusnainali.sawaeng@gmail.com",
+        "subject": "={{ $('PARSE FACT JSON').item.json.client_company_name }} (Client Report)",
+        "message": "={{ $('Markdown Client').item.json.html_report }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        208,
+        160
+      ],
+      "id": "3a4b8af1-f426-48c8-ae23-9540af93ca55",
+      "name": "Client mail",
+      "webhookId": "29c8a721-6522-4cad-a885-7b5dd0b3c613",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "fSR0C8tdFXQcRMkN",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "mhusnainali.sawaeng@gmail.com",
+        "subject": "={{ $('PARSE FACT JSON').item.json.client_company_name }} (internal Report)",
+        "message": "={{ $('Markdown internal').item.json.html_internal_report }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        416,
+        160
+      ],
+      "id": "1ee0a1f5-649d-47a1-bc96-649ba9d5b0f5",
+      "name": "Internal mail",
+      "webhookId": "52aa42e7-5beb-40da-9be4-f349af0855af",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "fSR0C8tdFXQcRMkN",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "mhusnainali.sawaeng@gmail.com",
+        "subject": "={{ $('PARSE FACT JSON').item.json.client_company_name }}",
+        "emailType": "text",
+        "message": "ou must include the Internal Report, the Client Report, AND the validation_failure_reason so the team knows why the AI blocked it.",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -2416,
+        416
+      ],
+      "id": "6c2c9ae8-9968-424a-ac63-d685cbf21b15",
+      "name": "Send a message",
+      "webhookId": "c0b8de1d-05e9-4587-a376-da4409cc196f",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "fSR0C8tdFXQcRMkN",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model14": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Client Report Generator",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PARSE FACT JSON": {
+      "main": [
+        [
+          {
+            "node": "Client Report Generator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Client Report Generator": {
+      "main": [
+        [
+          {
+            "node": "Internal Report Generator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Internal Report Generator": {
+      "main": [
+        [
+          {
+            "node": "Validation Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser2": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Validation Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model17": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Validation Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "Markdown Client",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send a message2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validation Agent": {
+      "main": [
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model18": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Internal Report Generator",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript2": {
+      "main": [
+        [
+          {
+            "node": "PARSE FACT JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to File": {
+      "main": [
+        [
+          {
+            "node": "Upload file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload file": {
+      "main": [
+        [
+          {
+            "node": "Download file1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download file1": {
+      "main": [
+        [
+          {
+            "node": "Send a message3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update a document": {
+      "main": [
+        [
+          {
+            "node": "Download file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download file": {
+      "main": [
+        [
+          {
+            "node": "Send a message1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create a document": {
+      "main": [
+        [
+          {
+            "node": "Update a document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Markdown Client": {
+      "main": [
+        [
+          {
+            "node": "Markdown internal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Markdown internal": {
+      "main": [
+        [
+          {
+            "node": "Client mail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Client mail": {
+      "main": [
+        [
+          {
+            "node": "Internal mail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "c5c2b252-ad9b-4363-a5da-0bcaf2a7ce74",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2a4b3682bbb77609f511db4e9abf8982c00ef7182a05ed155e8326755e303c61"
+  },
+  "id": "KceyFZPARPjCAFYH",
+  "tags": []
+}
