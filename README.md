@@ -66,7 +66,7 @@ The Python backend acts as a secure proxy mediator. Retell AI and n8n communicat
 
 ## 🟢 4. Logic Orchestration Path (n8n Node-by-Node)
 
-Once a call concludes, Retell dispatches the final transcript payload to n8n.
+Once a call concludes, Retell dispatches the final transcript payload to n8n
 <img width="959" height="439" alt="Screenshot 2026-06-13 010456" src="https://github.com/user-attachments/assets/a9a1efb7-81e3-41b2-9c84-db0a096a6ed9" />
 
 
